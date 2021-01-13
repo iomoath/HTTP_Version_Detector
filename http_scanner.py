@@ -54,14 +54,14 @@ def init_job_queue():
 
 def head_http(remote_host, port):
     conn = http.client.HTTPConnection(remote_host, port, timeout=TIMEOUT)
-    conn.request("HEAD", "/")
+    conn.request("GET", "/")
     return conn.getresponse()
 
 
 def head_https(remote_host, port):
     conn = http.client.HTTPSConnection(remote_host, port, timeout=TIMEOUT,
                                        context=ssl._create_unverified_context())
-    conn.request("HEAD", "/")
+    conn.request("GET", "/")
     return conn.getresponse()
 
 
