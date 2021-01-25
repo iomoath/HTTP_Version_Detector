@@ -3,12 +3,18 @@
 # Project Link: https://github.com/iomoath/HTTP_Version_Detector
 
 import http.client
-import ssl
 import socket
 import queue
 import threading
 import os.path
 import logging
+import requests
+from urllib.parse import urlparse
+import warnings
+
+
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+
 
 ############################ Global User Settings ############################
 # RHOSTS - Target hosts file
@@ -27,6 +33,8 @@ TRY_HTTPS = True
 TIMEOUT = 5
 MAX_THREADS = 50
 
+USER_AGENT = 'Mozilla/5.0 (Windows NT 6.3; Win64; x64; rv:84.0) Gecko/20100101 Firefox/84.0'
+
 
 ############################ Internal VARS ############################
 JOB_QUEUE = queue.Queue()
@@ -43,8 +51,8 @@ def init_job_queue():
         hosts = f.read().splitlines()
 
     if REMOTE_PORTS is None or not REMOTE_PORTS:
-        for i in range(10000):
-            REMOTE_PORTS.append(i)
+        for p in range(10000):
+            REMOTE_PORTS.append(p)
 
     for host in hosts:
         for remote_port in REMOTE_PORTS:
@@ -52,48 +60,91 @@ def init_job_queue():
             JOB_QUEUE.put(job)
 
 
-def head_http(remote_host, port):
-    conn = http.client.HTTPConnection(remote_host, port, timeout=TIMEOUT)
-    conn.request("GET", "/")
-    return conn.getresponse()
+def get_http(remote_host, port, proxy=None):
+    global USER_AGENT
+
+    headers = {'User-Agent': USER_AGENT,
+               'Connection': 'Close',
+               'Accept-Encoding': 'gzip, deflate',
+               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+               'DNT': '1',
+               'Upgrade-Insecure-Requests': '1',
+               'Accept-Language': 'en-US,en;q=0.5'}
+
+    base_domain = remote_host.strip().rstrip('/')
+
+    if base_domain.startswith('http://') or base_domain.startswith('https://'):
+        base_domain = urlparse(remote_host).netloc
+        url = "http://{}:{}/".format(base_domain, port)
+    else:
+        url = "http://{}:{}/".format(base_domain, port)
+
+    session = requests.Session()
+    response = session.get(url, headers=headers, verify=False, proxies=proxy)
+    return response
 
 
-def head_https(remote_host, port):
-    conn = http.client.HTTPSConnection(remote_host, port, timeout=TIMEOUT,
-                                       context=ssl._create_unverified_context())
-    conn.request("GET", "/")
-    return conn.getresponse()
+def get_https(remote_host, port, proxy=None):
+    global USER_AGENT
+
+    headers = {'User-Agent': USER_AGENT,
+               'Connection': 'Close',
+               'Accept-Encoding': 'gzip, deflate',
+               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+               'DNT': '1',
+               'Upgrade-Insecure-Requests': '1',
+               'Accept-Language': 'en-US,en;q=0.5'}
+
+    base_domain = remote_host.strip().rstrip('/')
+
+    if base_domain.startswith('http://') or base_domain.startswith('https://'):
+        base_domain = urlparse(remote_host).netloc
+        url = "https://{}:{}/".format(base_domain, port)
+    else:
+        url = "https://{}:{}/".format(base_domain, port)
 
 
-def process_response(remote_host, remote_port, response_headers):
+    session = requests.Session()
+    response = session.get(url, headers=headers, verify=False, proxies=proxy)
+    return response
+
+
+
+def process_response(remote_host, remote_port, is_https, http_request_response):
     # Check if these exist: Server, X-Powered-BY, Content-Length - Means HTTP
 
-    if response_headers is None or not response_headers:
+    if http_request_response is None or not http_request_response.headers:
         return False
 
     # Pre-checks, verify HTTP headers
-    content_length_found = False
+    contain_http_headers = False
 
-    for header in response_headers:
-        if header[0] == 'Content-Length':
-            content_length_found = True
+    for header in http_request_response.headers:
+        header_name = header.lower()
+        if header_name == 'content-length' or header_name == 'location' or header_name == 'transfer-encoding' or header_name == 'content-type':
+            contain_http_headers = True
 
-    if not content_length_found:
+    if not contain_http_headers:
         return False
 
     result = {'Host':remote_host, 'Port': remote_port, 'Server': '', 'X-Powered-By': ''}
 
-    for header in response_headers:
-        if header[0] == 'Server':
+    for header in http_request_response.headers:
+        header_name = header.lower()
+        if header_name == 'server':
             result['Server'] = header[1]
 
-        elif header[0] == 'X-Powered-By':
+        elif header_name == 'x-powered-by':
             result['X-Powered-By'] = header[1]
 
-    output_str = '{},{},{},{}'.format(result['Host'], result['Port'], result['Server'], result['X-Powered-By'])
+    proto = 'http'
+    if is_https:
+        proto = 'https'
+
+    output_str = '{},{},{},{},{}'.format(result['Host'], result['Port'], proto, result['Server'], result['X-Powered-By'])
     logger.info(output_str)
 
-    print('[+] {}, {}, {}, {}'.format(result['Host'], result['Port'], result['Server'], result['X-Powered-By']))
+    print('[+] {}, {}, {}, {}, {}'.format(result['Host'], result['Port'], proto, result['Server'], result['X-Powered-By']))
 
     return True
 
@@ -103,7 +154,7 @@ def init_output_file():
 
     file_size = os.path.getsize(OUTPUT_FILE)
     if not os.path.exists(OUTPUT_FILE) or file_size == 0:
-        line = 'Host,Port,Server,X-Powered-By'
+        line = 'Host,Port,Protocol,Server,X-Powered-By'
         logger.info(line)
 
 
@@ -127,41 +178,31 @@ def worker():
         remote_host = job['remote_host']
         remote_port = job['remote_port']
 
-        attempt_https = False
-
         try:
-            head_http_result = head_http(remote_host, remote_port)
-            process_result = process_response(remote_host, remote_port, head_http_result.getheaders())
-
-            if not process_result and TRY_HTTPS:
-                attempt_https = True
+            http_result = get_http(remote_host, remote_port)
+            process_response(remote_host, remote_port, False, http_result)
 
         except socket.timeout:
-            if TRY_HTTPS:
-                attempt_https = True
+            pass
         except http.client.RemoteDisconnected:
-            if TRY_HTTPS:
-                attempt_https = True
-        except Exception as e:
-            continue
-            #print(type(e))
-            #print(e)
+            pass
+        except:
+            pass
+
 
         # Attempt HTTPS
-        if not attempt_https:
+        if not TRY_HTTPS:
             continue
 
         try:
-            head_https_result = head_https(remote_host, remote_port)
-            process_response(remote_host, remote_port, head_https_result.getheaders())
+            head_https_result = get_https(remote_host, remote_port)
+            process_response(remote_host, remote_port, True, head_https_result)
         except socket.timeout:
             continue
         except http.client.RemoteDisconnected:
             continue
-        except Exception as e:
+        except:
             continue
-            #print(type(e))
-            #print(e)
 
 
 
