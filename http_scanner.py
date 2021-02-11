@@ -1,5 +1,4 @@
 # Author: Moath Maharmeh
-# Version: 1.0
 # Project Link: https://github.com/iomoath/HTTP_Version_Detector
 
 import http.client
@@ -23,7 +22,7 @@ RHOSTS_FILE = 'targets.txt'
 # Output file
 OUTPUT_FILE = 'output.csv'
 
-# Ports to attempt to connect to. If list is empty []. Then will try connect to first 10k ports 1-10000
+# Ports to attempt to connect to. If list is empty []. Then will try connect to first all ports 1-65535
 REMOTE_PORTS = [80, 443]
 #REMOTE_PORTS = []
 
@@ -51,8 +50,10 @@ def init_job_queue():
         hosts = f.read().splitlines()
 
     if REMOTE_PORTS is None or not REMOTE_PORTS:
-        for p in range(10000):
+        for p in range(65535):
             REMOTE_PORTS.append(p)
+
+        del REMOTE_PORTS[0]
 
     for host in hosts:
         for remote_port in REMOTE_PORTS:
@@ -132,10 +133,10 @@ def process_response(remote_host, remote_port, is_https, http_request_response):
     for header in http_request_response.headers:
         header_name = header.lower()
         if header_name == 'server':
-            result['Server'] = header[1]
+            result['Server'] = http_request_response.headers[header]
 
         elif header_name == 'x-powered-by':
-            result['X-Powered-By'] = header[1]
+            result['X-Powered-By'] = http_request_response.headers[header]
 
     proto = 'http'
     if is_https:
